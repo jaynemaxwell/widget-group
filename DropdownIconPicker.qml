@@ -25,7 +25,9 @@ Rectangle {
     property var allIcons: []
 
     FileView {
-        path: "/usr/share/quickshell/dms/assets/fonts/material-design-icons/variablefont/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].codepoints"
+        // Vendored with the plugin (assets/) — DMS ships only the font, not the
+        // codepoints name index, and its install path varies by version/layout.
+        path: Qt.resolvedUrl("assets/material-symbols-rounded.codepoints").toString().replace(/^file:\/\//, "")
         blockLoading: true
         onLoaded: {
             const lines = text().split('\n')
@@ -207,6 +209,9 @@ Rectangle {
         modal: true
         dim: false
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        // Always start at the top (categories) each time it opens. Deferred so the
+        // GridView has laid out its header before we position to the true top.
+        onOpened: Qt.callLater(() => gridScroll.positionViewAtBeginning())
 
         background: Rectangle { color: "transparent" }
 
@@ -271,94 +276,96 @@ Rectangle {
                 }
 
                 // Icon grid
-                DankFlickable {
+                // Virtualized grid: curated categories in the (scroll-away) header,
+                // then the full catalog. Search filters the whole catalog.
+                GridView {
                     id: gridScroll
                     width: parent.width
                     height: parent.height - searchField.height
                             - (searchField.text !== "" ? resultCount.height + Theme.spacingS : 0)
                             - manualRow.height - Theme.spacingS * 4
-                    contentHeight: gridContent.implicitHeight
                     clip: true
+                    cellWidth: 40
+                    cellHeight: 40
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                    // Reset scroll when query changes
-                    onContentHeightChanged: contentY = 0
+                    readonly property string query: searchField.text.toLowerCase()
 
-                    Column {
-                        id: gridContent
-                        width: parent.width
-                        spacing: Theme.spacingM
+                    model: query ? root.allIcons.filter(n => n.includes(query)) : root.allIcons
+                    // positionViewAtBeginning (not contentY=0) so the header/categories show.
+                    onModelChanged: positionViewAtBeginning()
 
-                        // ── Search results (all 4102 icons, filtered) ──────────
+                    // Curated categories on top (only when not searching); collapses to 0 when searching.
+                    header: Item {
+                        width: gridScroll.width
+                        height: gridScroll.query === "" ? catHeaderCol.implicitHeight + Theme.spacingS : 0
+                        clip: true
 
-                        Flow {
+                        Column {
+                            id: catHeaderCol
                             width: parent.width
-                            spacing: 4
-                            visible: searchField.text !== ""
+                            spacing: Theme.spacingM
+                            visible: gridScroll.query === ""
 
                             Repeater {
-                                model: {
-                                    const q = searchField.text.toLowerCase()
-                                    return q ? root.allIcons.filter(n => n.includes(q)) : []
-                                }
+                                model: root.iconCategories
 
-                                delegate: IconCell {
-                                    required property string modelData
-                                    iconName: modelData
-                                    selected: root.currentIcon === modelData
-                                    onChosen: (n) => { root.currentIcon = n; root.iconSelected(n); iconPopup.close() }
-                                }
-                            }
+                                delegate: Column {
+                                    required property var modelData
+                                    width: catHeaderCol.width
+                                    spacing: Theme.spacingXS
 
-                            StyledText {
-                                visible: {
-                                    const q = searchField.text.toLowerCase()
-                                    return q !== "" && root.allIcons.filter(n => n.includes(q)).length === 0
-                                }
-                                text: "No matches — use the field below to enter any icon name"
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                                wrapMode: Text.WordWrap
-                                width: gridContent.width
-                                topPadding: Theme.spacingM
-                            }
-                        }
+                                    StyledText {
+                                        text: modelData.name
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        font.weight: Font.Medium
+                                        color: Theme.surfaceText
+                                    }
 
-                        // ── Curated categories (shown when not searching) ──────
+                                    Flow {
+                                        width: parent.width
+                                        spacing: 4
 
-                        Repeater {
-                            model: root.iconCategories
-                            visible: searchField.text === ""
+                                        Repeater {
+                                            model: modelData.icons
 
-                            Column {
-                                required property var modelData
-                                width: gridContent.width
-                                spacing: Theme.spacingXS
-                                visible: searchField.text === ""
-
-                                StyledText {
-                                    text: modelData.name
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    font.weight: Font.Medium
-                                    color: Theme.surfaceText
-                                }
-
-                                Flow {
-                                    width: parent.width
-                                    spacing: 4
-
-                                    Repeater {
-                                        model: modelData.icons
-
-                                        delegate: IconCell {
-                                            required property string modelData
-                                            iconName: modelData
-                                            selected: root.currentIcon === modelData
-                                            onChosen: (n) => { root.currentIcon = n; root.iconSelected(n); iconPopup.close() }
+                                            delegate: IconCell {
+                                                required property string modelData
+                                                iconName: modelData
+                                                selected: root.currentIcon === modelData
+                                                onChosen: (n) => { root.currentIcon = n; root.iconSelected(n); iconPopup.close() }
+                                            }
                                         }
                                     }
                                 }
                             }
+
+                            StyledText {
+                                text: "All icons (" + root.allIcons.length + ")"
+                                font.pixelSize: Theme.fontSizeSmall
+                                font.weight: Font.Medium
+                                color: Theme.surfaceText
+                                topPadding: Theme.spacingS
+                            }
                         }
+                    }
+
+                    delegate: IconCell {
+                        required property string modelData
+                        iconName: modelData
+                        selected: root.currentIcon === modelData
+                        onChosen: (n) => { root.currentIcon = n; root.iconSelected(n); iconPopup.close() }
+                    }
+
+                    footer: StyledText {
+                        width: gridScroll.width
+                        visible: gridScroll.query !== "" && gridScroll.count === 0
+                        text: "No matches — type any icon name below"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                        wrapMode: Text.WordWrap
+                        topPadding: Theme.spacingM
                     }
                 }
 

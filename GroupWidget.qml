@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import qs.Common
 import qs.Widgets
 import qs.Modules.Plugins
@@ -40,16 +41,35 @@ PluginComponent {
     }
 
     readonly property var targets: variantData?.targets ?? []
-    readonly property string mainTarget: variantData?.mainTarget || ""
     readonly property string groupIcon: variantData?.icon || "widgets"
     readonly property string groupLabel: variantData?.label || ""
     readonly property string groupDisplay: variantData?.display || "both"
-    readonly property string mainClickButton: variantData?.mainClickButton || "right"
     readonly property string expandIndicatorPosition: variantData?.expandIndicatorPosition || ""
     readonly property bool showArrow: variantData?.showArrow !== false
     readonly property bool showArrowOnlyOnHover: variantData?.showArrowOnlyOnHover === true
-    readonly property bool hideMain: variantData?.hideMain === true
     readonly property bool collapseOthers: variantData?.collapseOthers === true
+
+    // Per-button click actions. Each button ("left"/"right"/"middle") maps to an
+    // action: "expand" (toggle the group), "command" (run a shell command),
+    // "widget" (activate a chosen member), or "none". Left defaults to expand.
+    readonly property string leftClickAction:    variantData?.leftClickAction    || "expand"
+    readonly property string leftClickCommand:   variantData?.leftClickCommand   || ""
+    readonly property string leftClickWidget:    variantData?.leftClickWidget    || ""
+    readonly property string rightClickAction:   variantData?.rightClickAction   || "none"
+    readonly property string rightClickCommand:  variantData?.rightClickCommand  || ""
+    readonly property string rightClickWidget:   variantData?.rightClickWidget   || ""
+    readonly property string middleClickAction:  variantData?.middleClickAction  || "none"
+    readonly property string middleClickCommand: variantData?.middleClickCommand || ""
+    readonly property string middleClickWidget:  variantData?.middleClickWidget  || ""
+
+    // Members pinned to the collapsed view: their icons stay visible on the bar
+    // even when the group is folded, sitting beside the toggle button.
+    readonly property var collapsedTargets: variantData?.collapsedTargets ?? []
+
+    // Unified click: treat the collapsed control (toggle content + pinned icons) as
+    // one button — a click anywhere on it fires the assigned mouse action, and the
+    // pinned members don't handle their own clicks (like a DMS control-center pill).
+    readonly property bool unifiedClick: variantData?.unifiedClick === true
     // Overlay mode: when expanded, don't reserve layout space (don't push other
     // widgets) — members overflow and paint on top instead.
     readonly property bool overlayExpand: variantData?.overlayExpand === true
@@ -76,8 +96,15 @@ PluginComponent {
 
     property var _memberRefs: ({})
 
-    readonly property bool showIcon:  groupDisplay !== "text"
-    readonly property bool showLabel: groupDisplay !== "icon" && groupLabel !== ""
+    // Bumped whenever a member's size or the pinned set changes, so the overlay
+    // footprint (which sums pinned members) re-evaluates.
+    property int _pinRev: 0
+    function _bumpPinRev() { root._pinRev = root._pinRev + 1 }
+
+    // "both" | "icon" | "text" | "none". "none" shows neither icon nor label —
+    // just the expand/collapse symbol next to any pinned members.
+    readonly property bool showIcon:  groupDisplay === "both" || groupDisplay === "icon"
+    readonly property bool showLabel: (groupDisplay === "both" || groupDisplay === "text") && groupLabel !== ""
     readonly property bool hasToggleContent: showIcon || showLabel
 
     // Auto-orient expansion by the toggle's position on screen so members unfold
@@ -111,9 +138,13 @@ PluginComponent {
     // the band.
     function _recomputeHDir(toggleItem) {
         if (root.expanded || !toggleItem) return
+        // A hover-hidden toggle is out of the layout, so its position is stale —
+        // measure the collapsed row around it instead.
+        const ref = toggleItem.visible ? toggleItem : toggleItem.parent
+        if (!ref) return
         const w = root._barExtent(false)
         if (w <= 0) return
-        const cx = toggleItem.mapToItem(null, toggleItem.width / 2, 0).x
+        const cx = ref.mapToItem(null, ref.width / 2, 0).x
         const margin = w * 0.04
         if (cx > w / 2 + margin) root._autoHLeft = true
         else if (cx < w / 2 - margin) root._autoHLeft = false
@@ -121,9 +152,11 @@ PluginComponent {
 
     function _recomputeVDir(toggleItem) {
         if (root.expanded || !toggleItem) return
+        const ref = toggleItem.visible ? toggleItem : toggleItem.parent   // see _recomputeHDir
+        if (!ref) return
         const h = root._barExtent(true)
         if (h <= 0) return
-        const cy = toggleItem.mapToItem(null, 0, toggleItem.height / 2).y
+        const cy = ref.mapToItem(null, 0, ref.height / 2).y
         const margin = h * 0.04
         if (cy > h / 2 + margin) root._autoVUp = true
         else if (cy < h / 2 - margin) root._autoVUp = false
@@ -153,6 +186,7 @@ PluginComponent {
         const refs = Object.assign({}, root._memberRefs || {})
         refs[targetId] = member
         root._memberRefs = refs
+        root._bumpPinRev()
     }
 
     function _unregisterMember(targetId, member) {
@@ -163,10 +197,60 @@ PluginComponent {
         const refs = Object.assign({}, root._memberRefs)
         delete refs[targetId]
         root._memberRefs = refs
+        root._bumpPinRev()
     }
 
-    function _mainMember() {
-        return root.mainTarget ? (root._memberRefs?.[root.mainTarget] || null) : null
+    function _activateMember(targetId) {
+        if (!targetId)
+            return false
+        const member = root._memberRefs?.[targetId]
+        if (!member || typeof member.triggerMainAction !== "function")
+            return false
+        return member.triggerMainAction()
+    }
+
+    function _runCommand(cmd) {
+        const c = (cmd || "").trim()
+        if (!c)
+            return
+        try {
+            Quickshell.execDetached(["sh", "-c", c])
+        } catch (e) {
+            console.warn("[widgetGroup] command failed:", c, ":", e)
+        }
+    }
+
+    // Whether a member is pinned to (shown in) the collapsed view.
+    function _isMemberPinned(targetId) {
+        return root.collapsedTargets.indexOf(targetId) >= 0
+    }
+
+    // A member reserves space / renders when the group is expanded, or when it's
+    // pinned to the collapsed view.
+    function _isMemberShown(targetId) {
+        return root.expanded || root._isMemberPinned(targetId)
+    }
+
+    // Primary-axis extent of the always-shown content (toggle + pinned members),
+    // used as the overlay-mode footprint so pinned icons reserve their space while
+    // only the expand-only members overflow and paint on top. Reads _pinRev,
+    // targets, collapsedTargets and _memberRefs so it re-evaluates on any change.
+    function _pinnedFootprint(vertical, toggleSize, spacing) {
+        const _tick = root._pinRev
+        const refs = root._memberRefs || {}
+        let total = toggleSize
+        for (let i = 0; i < root.targets.length; i++) {
+            const id = root.targets[i]
+            if (!root._isMemberPinned(id))
+                continue
+            const m = refs[id]
+            if (!m)
+                continue
+            const s = vertical ? m.implicitHeight : m.implicitWidth
+            if (s > 0)
+                total += (total > 0 ? spacing : 0) + s   // no leading gap when the toggle is hidden
+        }
+        return total
     }
 
     function _resolvedExpandIndicatorPosition() {
@@ -176,29 +260,31 @@ PluginComponent {
         return (edge === "left" || edge === "right") ? "bottom" : "right"
     }
 
+    // Hiding the symbol takes it out of the layout entirely (the slot is `visible:
+    // false`, so Row/Column drop it and its spacing) — the group closes up rather than
+    // leaving a gap, and re-hovering reopens it. Kept on while expanded: the symbol is
+    // the collapse control there, and an open group shouldn't reshuffle on hover.
     function _shouldShowArrow(hovered) {
+        const hoverOnly = root.showArrow && root.showArrowOnlyOnHover && !root.expanded
+        // Symbol-only toggle (display "none"): the symbol *is* the button, so it never
+        // switches off for good. It can still wait for hover, but only while a pinned
+        // icon keeps the group on the bar meanwhile — otherwise the whole widget would
+        // vanish and there'd be nothing left to hover.
         if (!root.hasToggleContent)
-            return true
+            return (hoverOnly && root.collapsedTargets.length > 0) ? hovered === true : true
         if (!root.showArrow)
             return false
-        if (root.showArrowOnlyOnHover)
-            return hovered === true
-        return true
+        return hoverOnly ? hovered === true : true
     }
 
     function _toggleArrowSlotVisible() {
         return root.hasToggleContent ? root.showArrow : true
     }
 
-    function _isMemberHidden(targetId) {
-        return root.hideMain && !!root.mainTarget && targetId === root.mainTarget
-    }
-
-    function _isMemberVisible(targetId) {
-        return !root._isMemberHidden(targetId)
-    }
-
     function _horizontalToggleSourceComponent() {
+        // No icon/label (display "none"): render just the symbol, no body/padding.
+        if (!root.hasToggleContent)
+            return hToggleArrowOnlyComp
         if (!root._toggleArrowSlotVisible())
             return hToggleBodyComp
         const pos = root._resolvedExpandIndicatorPosition()
@@ -212,6 +298,8 @@ PluginComponent {
     }
 
     function _verticalToggleSourceComponent() {
+        if (!root.hasToggleContent)
+            return vToggleArrowOnlyComp
         if (!root._toggleArrowSlotVisible())
             return vToggleBodyComp
         const pos = root._resolvedExpandIndicatorPosition()
@@ -267,13 +355,53 @@ PluginComponent {
         }
     }
 
+    function _clickActionFor(button) {
+        if (button === Qt.LeftButton)
+            return { action: root.leftClickAction,   command: root.leftClickCommand,   widget: root.leftClickWidget }
+        if (button === Qt.RightButton)
+            return { action: root.rightClickAction,  command: root.rightClickCommand,  widget: root.rightClickWidget }
+        if (button === Qt.MiddleButton)
+            return { action: root.middleClickAction, command: root.middleClickCommand, widget: root.middleClickWidget }
+        return { action: "none", command: "", widget: "" }
+    }
+
+    // The expand/collapse symbol always stays an expand/collapse control, whatever
+    // the group's click actions are set to — otherwise a group whose left click runs
+    // a command or activates a member has no way to unfold. Every hit-target that
+    // covers the symbol (the toggle's own area, and the unified one over the whole
+    // collapsed cluster) routes left clicks landing on it back to toggling.
+    //
+    // The region is the toggle arrangement's symbol slot, which it exposes as
+    // `symbolSlot`; with no icon or label the toggle is symbol-only, so the whole
+    // button counts. Arrangements without a symbol expose nothing and opt out.
+    function _toggleSymbolTarget(loader, toggle) {
+        if (!root.hasToggleContent)
+            return toggle
+        return loader?.item?.symbolSlot ?? null
+    }
+
+    function _hitsExpandSymbol(slot, source, x, y) {
+        if (!slot || !slot.visible || slot.width <= 0 || slot.height <= 0)
+            return false
+        const p = source.mapToItem(slot, x, y)
+        return p.x >= 0 && p.y >= 0 && p.x < slot.width && p.y < slot.height
+    }
+
     function _handleGroupClick(button) {
-        if (root.mainTarget) {
-            const activateButton = root.mainClickButton === "left" ? Qt.LeftButton : Qt.RightButton
-            if (button === activateButton && root._activateMainMember())
-                return
+        const a = root._clickActionFor(button)
+        switch (a.action) {
+        case "expand":
+            root.expanded = !root.expanded
+            break
+        case "command":
+            root._runCommand(a.command)
+            break
+        case "widget":
+            root._activateMember(a.widget)
+            break
+        default:
+            break
         }
-        root.expanded = !root.expanded
     }
 
     // Symmetric opposing-chevron icons that flip on expand/collapse only — there's
@@ -282,13 +410,6 @@ PluginComponent {
     // toggle rotates the icon 90° so it reads as ‹ › / › ‹.
     readonly property string _hChevron: root.expanded ? "unfold_less" : "unfold_more"
     readonly property string _vChevron: root.expanded ? "unfold_less" : "unfold_more"
-
-    function _activateMainMember() {
-        const member = root._mainMember()
-        if (!member || typeof member.triggerMainAction !== "function")
-            return false
-        return member.triggerMainAction()
-    }
 
     Timer {
         id: collapseTimer
@@ -334,19 +455,34 @@ PluginComponent {
         }
     }
 
+    // Symbol-only toggle body (display "none"): just the chevron, no body or gap.
+    // Hover-hiding is handled by the toggle itself, which drops out of the layout.
+    Component {
+        id: hToggleArrowOnlyComp
+        DankIcon {
+            name: root._hChevron
+            rotation: 90
+            size: root.iconSize - 8
+            color: Theme.surfaceVariantText
+        }
+    }
+
     Component {
         id: hToggleRowBeforeComp
         Row {
             spacing: Theme.spacingXS
             readonly property int slotHeight: Math.max(root.iconSize, hBodyLoader.implicitHeight)
+            // Where the expand/collapse symbol sits, for the click handlers above.
+            readonly property Item symbolSlot: hSymbolSlot
             Item {
+                id: hSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: root.iconSize
                 height: slotHeight
                 Loader {
                     id: hArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: hToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
             Item {
@@ -366,14 +502,17 @@ PluginComponent {
         Row {
             spacing: Theme.spacingXS
             readonly property int slotHeight: Math.max(root.iconSize, hBodyLoader.implicitHeight)
+            // Where the expand/collapse symbol sits, for the click handlers above.
+            readonly property Item symbolSlot: hSymbolSlot
             Item {
+                id: hSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: root.iconSize
                 height: slotHeight
                 Loader {
                     id: hArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: hToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
             Item {
@@ -393,14 +532,16 @@ PluginComponent {
         Column {
             spacing: Theme.spacingXS
             readonly property int slotWidth: Math.max(root.iconSize, hBodyLoader.implicitWidth)
+            readonly property Item symbolSlot: hSymbolSlot
             Item {
+                id: hSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: slotWidth
                 height: root.iconSize
                 Loader {
                     id: hArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: hToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
             Item {
@@ -420,6 +561,7 @@ PluginComponent {
         Column {
             spacing: Theme.spacingXS
             readonly property int slotWidth: Math.max(root.iconSize, hBodyLoader.implicitWidth)
+            readonly property Item symbolSlot: hSymbolSlot
             Item {
                 width: slotWidth
                 height: hBodyLoader.implicitHeight
@@ -430,13 +572,14 @@ PluginComponent {
                 }
             }
             Item {
+                id: hSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: slotWidth
                 height: root.iconSize
                 Loader {
                     id: hArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: hToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
         }
@@ -475,18 +618,29 @@ PluginComponent {
     }
 
     Component {
+        id: vToggleArrowOnlyComp
+        DankIcon {
+            name: root._vChevron
+            size: root.iconSize - 8
+            color: Theme.surfaceVariantText
+        }
+    }
+
+    Component {
         id: vToggleRowBeforeComp
         Row {
             spacing: Theme.spacingXS
             readonly property int slotHeight: Math.max(root.iconSize, vBodyLoader.implicitHeight)
+            readonly property Item symbolSlot: vSymbolSlot
             Item {
+                id: vSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: root.iconSize
                 height: slotHeight
                 Loader {
                     id: vArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: vToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
             Item {
@@ -506,14 +660,16 @@ PluginComponent {
         Row {
             spacing: Theme.spacingXS
             readonly property int slotHeight: Math.max(root.iconSize, vBodyLoader.implicitHeight)
+            readonly property Item symbolSlot: vSymbolSlot
             Item {
+                id: vSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: root.iconSize
                 height: slotHeight
                 Loader {
                     id: vArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: vToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
             Item {
@@ -533,14 +689,16 @@ PluginComponent {
         Column {
             spacing: Theme.spacingXS
             readonly property int slotWidth: Math.max(root.iconSize, vBodyLoader.implicitWidth)
+            readonly property Item symbolSlot: vSymbolSlot
             Item {
+                id: vSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: slotWidth
                 height: root.iconSize
                 Loader {
                     id: vArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: vToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
             Item {
@@ -560,6 +718,7 @@ PluginComponent {
         Column {
             spacing: Theme.spacingXS
             readonly property int slotWidth: Math.max(root.iconSize, vBodyLoader.implicitWidth)
+            readonly property Item symbolSlot: vSymbolSlot
             Item {
                 width: slotWidth
                 height: vBodyLoader.implicitHeight
@@ -570,13 +729,14 @@ PluginComponent {
                 }
             }
             Item {
+                id: vSymbolSlot
+                visible: root._shouldShowArrow(root.hovered)
                 width: slotWidth
                 height: root.iconSize
                 Loader {
                     id: vArrowLoader
                     anchors.centerIn: parent
                     sourceComponent: vToggleArrowComp
-                    visible: root._shouldShowArrow(root.hovered)
                 }
             }
         }
@@ -585,9 +745,10 @@ PluginComponent {
     // ── Horizontal bar pill ──────────────────────────────────────────────────
     horizontalBarPill: Component {
         Item {
-            // In overlay mode keep the bar footprint at the collapsed (toggle) size
-            // so expanding doesn't push neighbours; members overflow and paint over.
-            implicitWidth: root.overlayExpand ? hToggle.width : hRow.width
+            // In overlay mode keep the bar footprint at the collapsed size (toggle
+            // plus any pinned members) so expanding doesn't push neighbours; the
+            // expand-only members overflow and paint over.
+            implicitWidth: root.overlayExpand ? root._pinnedFootprint(false, hToggle.visible ? hToggle.width : 0, hRow.spacing) : hRow.width
             implicitHeight: hRow.height
 
             // Solid backing shown while expanded so the group stays readable when
@@ -602,6 +763,15 @@ PluginComponent {
                 border.width: root.showExpandedBorder ? 1 : 0
                 border.color: Theme.outlineVariant
                 Behavior on opacity { NumberAnimation { duration: Theme.shortDuration } }
+            }
+
+            // Unified-click hover highlight: while collapsed and unified, the whole
+            // cluster (toggle + pinned icons) highlights as one button on hover.
+            Rectangle {
+                anchors.fill: hRow
+                radius: Theme.cornerRadius
+                color: Theme.primaryHover
+                visible: root.unifiedClick && !root.expanded && hUnifiedArea.containsMouse
             }
 
             Row {
@@ -622,7 +792,11 @@ PluginComponent {
             // Toggle button
             Rectangle {
                 id: hToggle
-                width: hToggleLoader.implicitWidth + Theme.spacingS * 2
+                // Symbol-only button: when the symbol hides on hover there's nothing
+                // left in it, so drop the whole button from the row rather than leave
+                // an empty pill. Hovering the pinned icons brings it back.
+                visible: root.hasToggleContent || root._shouldShowArrow(root.hovered)
+                width: hToggleLoader.implicitWidth + (root.hasToggleContent ? Theme.spacingS * 2 : Theme.spacingXS * 2)
                 height: hToggleLoader.implicitHeight + Theme.spacingXS * 2
                 radius: Theme.cornerRadius
                 color: hToggleArea.containsMouse ? Theme.primaryHover : "transparent"
@@ -638,8 +812,16 @@ PluginComponent {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                     onClicked: function(mouse) {
+                        // Left-clicking the expand/collapse symbol always folds/unfolds,
+                        // even when left click is bound to a command or a member.
+                        if (mouse.button === Qt.LeftButton
+                            && root._hitsExpandSymbol(root._toggleSymbolTarget(hToggleLoader, hToggle),
+                                                      hToggleArea, mouse.x, mouse.y)) {
+                            root.expanded = !root.expanded
+                            return
+                        }
                         root._handleGroupClick(mouse.button)
                     }
                 }
@@ -651,11 +833,12 @@ PluginComponent {
                 delegate: Item {
                     id: hWrap
                     required property var modelData
-                    visible: root._isMemberVisible(hWrap.modelData)
-                    height: root._isMemberVisible(hWrap.modelData) && root.expanded ? hMember.implicitHeight : 0
-                    width: root._isMemberVisible(hWrap.modelData) && root.expanded ? hMember.implicitWidth : 0
+                    readonly property bool shown: root._isMemberShown(hWrap.modelData)
+                    visible: shown
+                    height: shown ? hMember.implicitHeight : 0
+                    width: shown ? hMember.implicitWidth : 0
                     clip: true
-                    opacity: root._isMemberVisible(hWrap.modelData) && root.expanded ? 1 : 0
+                    opacity: shown ? 1 : 0
                     anchors.verticalCenter: parent.verticalCenter
 
                     Behavior on width   { NumberAnimation { duration: Theme.shortDuration; easing.type: Theme.standardEasing } }
@@ -679,6 +862,7 @@ PluginComponent {
                             if (ready)
                                 root._registerMember(hWrap.modelData, hMember)
                         }
+                        onImplicitWidthChanged: root._bumpPinRev()
                     }
 
                     Component.onCompleted: root._registerMember(hWrap.modelData, hMember)
@@ -691,7 +875,7 @@ PluginComponent {
             // target at both ends of the expanded panel.
             Rectangle {
                 id: hCap
-                visible: root.targets.length > 0 && root.targets.some(t => root._isMemberVisible(t))
+                visible: root.targets.length > 0
                 width: root.expanded ? hCapLoader.implicitWidth + Theme.spacingS * 2 : 0
                 height: hCapLoader.implicitHeight + Theme.spacingXS * 2
                 radius: Theme.cornerRadius
@@ -719,6 +903,31 @@ PluginComponent {
                 }
             }
         }
+
+            // Unified click: one hit-target over the collapsed cluster (toggle +
+            // pinned members). On top of their own mouse areas so pinned members act
+            // as passive icons; disabled while expanded so members stay interactive.
+            MouseArea {
+                id: hUnifiedArea
+                anchors.fill: hRow
+                z: 10
+                visible: root.unifiedClick && !root.expanded
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                onClicked: function(mouse) {
+                    // The symbol is carved out of the unified button: clicking it
+                    // expands/collapses instead of firing the group's action.
+                    if (mouse.button === Qt.LeftButton
+                        && root._hitsExpandSymbol(root._toggleSymbolTarget(hToggleLoader, hToggle),
+                                                  hUnifiedArea, mouse.x, mouse.y)) {
+                        root.expanded = !root.expanded
+                        return
+                    }
+                    root._handleGroupClick(mouse.button)
+                }
+                onContainsMouseChanged: { root.hovered = containsMouse; if (containsMouse) root._recomputeHDir(hToggle) }
+            }
         }
     }
 
@@ -732,7 +941,7 @@ PluginComponent {
             // End cap at the top — far end when expanding upward
             Rectangle {
                 id: vCapTop
-                visible: root.targets.length > 0 && root.targets.some(t => root._isMemberVisible(t)) && root.vUp
+                visible: root.targets.length > 0 && root.vUp
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: vCapTopLoader.implicitWidth + Theme.spacingXS * 2
                 height: root.expanded ? vCapTopLoader.implicitHeight + Theme.spacingXS * 2 : 0
@@ -765,11 +974,12 @@ PluginComponent {
                 delegate: Item {
                     id: vWrap
                     required property var modelData
-                    visible: root._isMemberVisible(vWrap.modelData)
-                    width: root._isMemberVisible(vWrap.modelData) && root.expanded ? vMember.implicitWidth : 0
-                    height: root._isMemberVisible(vWrap.modelData) && root.expanded ? vMember.implicitHeight : 0
+                    readonly property bool shown: root._isMemberShown(vWrap.modelData)
+                    visible: shown
+                    width: shown ? vMember.implicitWidth : 0
+                    height: shown ? vMember.implicitHeight : 0
                     clip: true
-                    opacity: root._isMemberVisible(vWrap.modelData) && root.expanded ? 1 : 0
+                    opacity: shown ? 1 : 0
                     anchors.horizontalCenter: parent.horizontalCenter
 
                     Behavior on height  { NumberAnimation { duration: Theme.shortDuration; easing.type: Theme.standardEasing } }
@@ -789,14 +999,22 @@ PluginComponent {
                         barSpacing: root.barSpacing
                         barConfig: root.barConfig
                         blurBarWindow: root.blurBarWindow
+                        onReadyChanged: {
+                            if (ready)
+                                root._registerMember(vWrap.modelData, vMember)
+                        }
+                        onImplicitHeightChanged: root._bumpPinRev()
                     }
+
+                    Component.onCompleted: root._registerMember(vWrap.modelData, vMember)
+                    Component.onDestruction: root._unregisterMember(vWrap.modelData, vMember)
                 }
             }
 
             // End cap at the bottom — far end when expanding downward
             Rectangle {
                 id: vCapBot
-                visible: root.targets.length > 0 && root.targets.some(t => root._isMemberVisible(t)) && !root.vUp
+                visible: root.targets.length > 0 && !root.vUp
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: vCapBotLoader.implicitWidth + Theme.spacingXS * 2
                 height: root.expanded ? vCapBotLoader.implicitHeight + Theme.spacingXS * 2 : 0
@@ -829,9 +1047,10 @@ PluginComponent {
     verticalBarPill: Component {
         Item {
             implicitWidth: vCol.width
-            // In overlay mode keep the bar footprint at the collapsed (toggle) size
-            // so expanding doesn't push neighbours; members overflow and paint over.
-            implicitHeight: root.overlayExpand ? vToggle.height : vCol.height
+            // In overlay mode keep the bar footprint at the collapsed size (toggle
+            // plus any pinned members) so expanding doesn't push neighbours; the
+            // expand-only members overflow and paint over.
+            implicitHeight: root.overlayExpand ? root._pinnedFootprint(true, vToggle.visible ? vToggle.height : 0, vCol.spacing) : vCol.height
 
             // Solid backing shown while expanded so the group stays readable when
             // its members overlap an adjacent bar section.
@@ -844,6 +1063,14 @@ PluginComponent {
                 border.width: root.showExpandedBorder ? 1 : 0
                 border.color: Theme.outlineVariant
                 Behavior on opacity { NumberAnimation { duration: Theme.shortDuration } }
+            }
+
+            // Unified-click hover highlight (see the horizontal pill for details).
+            Rectangle {
+                anchors.fill: vCol
+                radius: Theme.cornerRadius
+                color: Theme.primaryHover
+                visible: root.unifiedClick && !root.expanded && vUnifiedArea.containsMouse
             }
 
             Column {
@@ -869,8 +1096,11 @@ PluginComponent {
 
             Rectangle {
                 id: vToggle
+                // See the horizontal toggle: a symbol-only button leaves the column
+                // when its symbol is hover-hidden.
+                visible: root.hasToggleContent || root._shouldShowArrow(root.hovered)
                 width: vToggleLoader.implicitWidth + Theme.spacingXS * 2
-                height: vToggleLoader.implicitHeight + Theme.spacingS * 2
+                height: vToggleLoader.implicitHeight + (root.hasToggleContent ? Theme.spacingS * 2 : Theme.spacingXS * 2)
                 radius: Theme.cornerRadius
                 color: vToggleArea.containsMouse ? Theme.primaryHover : "transparent"
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -885,8 +1115,15 @@ PluginComponent {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                     onClicked: function(mouse) {
+                        // See the horizontal toggle: the symbol always expands/collapses.
+                        if (mouse.button === Qt.LeftButton
+                            && root._hitsExpandSymbol(root._toggleSymbolTarget(vToggleLoader, vToggle),
+                                                      vToggleArea, mouse.x, mouse.y)) {
+                            root.expanded = !root.expanded
+                            return
+                        }
                         root._handleGroupClick(mouse.button)
                     }
                 }
@@ -899,6 +1136,28 @@ PluginComponent {
                 anchors.horizontalCenter: parent.horizontalCenter
             }
         }
+
+            // Unified click hit-target over the collapsed cluster (toggle + pinned).
+            MouseArea {
+                id: vUnifiedArea
+                anchors.fill: vCol
+                z: 10
+                visible: root.unifiedClick && !root.expanded
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                onClicked: function(mouse) {
+                    // See the horizontal pill: the symbol is carved out of the button.
+                    if (mouse.button === Qt.LeftButton
+                        && root._hitsExpandSymbol(root._toggleSymbolTarget(vToggleLoader, vToggle),
+                                                  vUnifiedArea, mouse.x, mouse.y)) {
+                        root.expanded = !root.expanded
+                        return
+                    }
+                    root._handleGroupClick(mouse.button)
+                }
+                onContainsMouseChanged: { root.hovered = containsMouse; if (containsMouse) root._recomputeVDir(vToggle) }
+            }
         }
     }
 }

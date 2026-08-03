@@ -2,7 +2,7 @@
   "id": "widgetGroup",
   "name": "Widget Group",
   "description": "One bar button that expands to reveal a group of widgets inline, each with its own live pill and popout",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "rdannenbring",
   "type": "widget",
   "category": "utilities",
@@ -12,5 +12,5 @@
   "settings": "./GroupSettings.qml",
   "repo": "https://github.com/rdannenbring/widget-group",
   "screenshot": "https://raw.githubusercontent.com/rdannenbring/widget-group/main/assets/group-expanded.png",
-  "permissions": ["settings_read", "settings_write"]
+  "permissions": ["settings_read", "settings_write", "shell_execute"]
 }

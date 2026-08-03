@@ -245,8 +245,9 @@ Item {
 
     // ── DMS built-in bar widget components ────────────────────────────────────
     // Most built-ins inherit BasePill and get their context from the bindings above.
-    // A few normally receive click handlers from DankBarContent, so wire the common
-    // cases through PopoutService when Widget Group has it injected.
+    // Widgets whose click handlers normally come from DankBarContent (they only
+    // emit a signal) are wired here through PopoutService, mirroring DMS's own
+    // wiring; popoutTarget gives BasePill its open-state highlight.
     Component { id: workspaceSwitcherComponent; WorkspaceSwitcher {} }
     Component { id: focusedWindowComponent; FocusedApp {} }
     Component { id: runningAppsComponent; RunningApps {} }
@@ -269,19 +270,81 @@ Item {
 
     Component { id: systemTrayComponent; SystemTrayBar {} }
     Component { id: privacyIndicatorComponent; PrivacyIndicator {} }
-    Component { id: clipboardComponent; ClipboardButton {} }
-    Component { id: cpuUsageComponent; CpuMonitor {} }
-    Component { id: memUsageComponent; RamMonitor {} }
+
+    Component {
+        id: clipboardComponent
+        ClipboardButton {
+            popoutTarget: gm.popoutService?.clipboardHistoryPopoutLoader?.item ?? null
+            onClipboardClicked: if (gm.popoutService?.openClipboardHistory) gm.popoutService.openClipboardHistory()
+        }
+    }
+
+    Component {
+        id: cpuUsageComponent
+        CpuMonitor {
+            popoutTarget: gm.popoutService?.processListPopoutLoader?.item ?? null
+            onCpuClicked: gm._requestProcessList("cpu", this, "cpu")
+        }
+    }
+
+    Component {
+        id: memUsageComponent
+        RamMonitor {
+            popoutTarget: gm.popoutService?.processListPopoutLoader?.item ?? null
+            onRamClicked: gm._requestProcessList("memory", this, "memory")
+        }
+    }
+
     Component { id: diskUsageComponent; DiskUsage {} }
-    Component { id: cpuTempComponent; CpuTemperature {} }
-    Component { id: gpuTempComponent; GpuTemperature {} }
-    Component { id: notificationButtonComponent; NotificationCenterButton {} }
-    Component { id: batteryComponent; Battery {} }
+
+    Component {
+        id: cpuTempComponent
+        CpuTemperature {
+            popoutTarget: gm.popoutService?.processListPopoutLoader?.item ?? null
+            onCpuTempClicked: gm._requestProcessList("cpu", this, "cpu_temp")
+        }
+    }
+
+    Component {
+        id: gpuTempComponent
+        GpuTemperature {
+            popoutTarget: gm.popoutService?.processListPopoutLoader?.item ?? null
+            onGpuTempClicked: gm._requestProcessList("cpu", this, "gpu_temp")
+        }
+    }
+
+    Component {
+        id: notificationButtonComponent
+        NotificationCenterButton {
+            popoutTarget: gm.popoutService?.notificationCenterLoader?.item ?? null
+            onClicked: gm._requestPopout(gm.popoutService?.notificationCenterLoader, this, "notifications", "right")
+        }
+    }
+
+    Component {
+        id: batteryComponent
+        Battery {
+            popoutTarget: gm.popoutService?.batteryPopoutLoader?.item ?? null
+            batteryPopupVisible: gm.popoutService?.batteryPopoutLoader?.item?.shouldBeVisible ?? false
+            onToggleBatteryPopup: gm._requestPopout(gm.popoutService?.batteryPopoutLoader, this, "battery", "right")
+        }
+    }
+
     Component {
         id: layoutComponent
-        DWLLayout {}
+        DWLLayout {
+            popoutTarget: gm.popoutService?.layoutPopoutLoader?.item ?? null
+            onToggleLayoutPopup: gm._requestPopout(gm.popoutService?.layoutPopoutLoader, this, "layout", "center")
+        }
     }
-    Component { id: controlCenterButtonComponent; ControlCenterButton {} }
+
+    Component {
+        id: controlCenterButtonComponent
+        ControlCenterButton {
+            popoutTarget: gm.popoutService?.controlCenterLoader?.item ?? null
+            onClicked: gm._requestPopout(gm.popoutService?.controlCenterLoader, this, "controlCenter", "right")
+        }
+    }
     Component { id: capsLockIndicatorComponent; CapsLockIndicator {} }
     Component { id: idleInhibitorComponent; IdleInhibitor {} }
 
@@ -314,7 +377,15 @@ Item {
 
     Component { id: networkComponent; NetworkMonitor {} }
     Component { id: keyboardLayoutNameComponent; KeyboardLayoutName {} }
-    Component { id: vpnComponent; Vpn {} }
+
+    Component {
+        id: vpnComponent
+        Vpn {
+            popoutTarget: gm.popoutService?.vpnPopoutLoader?.item ?? null
+            onToggleVpnPopup: gm._requestPopout(gm.popoutService?.vpnPopoutLoader, this, "vpn", "right")
+        }
+    }
+
     Component { id: notepadButtonComponent; NotepadButton {} }
 
     Component {
@@ -324,7 +395,13 @@ Item {
         }
     }
 
-    Component { id: systemUpdateComponent; SystemUpdate {} }
+    Component {
+        id: systemUpdateComponent
+        SystemUpdate {
+            popoutTarget: gm.popoutService?.systemUpdateLoader?.item ?? null
+            onClicked: gm._requestPopout(gm.popoutService?.systemUpdateLoader, this, "systemUpdate", "right")
+        }
+    }
 
     Component {
         id: powerMenuButtonComponent

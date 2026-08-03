@@ -2,7 +2,7 @@
 
 A [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) (DMS) bar plugin that adds a single **collapsible button** to the bar which expands to reveal a group of other widgets inline — each keeping its own live pill and working popout.
 
-> Status: **beta** (v0.5.0)
+> Status: **beta** (v0.7.0)
 
 ## Screenshots
 
@@ -23,15 +23,18 @@ Bars get crowded. Widget Group lets you fold a cluster of widgets behind one but
 - **Group any widgets** behind one bar button — both third-party widget plugins **and DMS built-in bar widgets** (clock, media, system tray, monitors, control center, …).
 - Members are the **real widgets** — live pills and fully working popouts.
 - **Auto-oriented expansion**: the group expands toward the open side of the bar automatically (left/right on horizontal bars, up/down on vertical) — no direction to configure.
-- **Main widget** (optional): designate one member as the group's main. A configurable click of the button runs it directly; the other click expands/collapses. Optionally hide the main from the expanded list so it doesn't appear twice.
-- **Expand/collapse symbols**: an unfold symbol on the button plus a matching end-cap button at the far end (group icon + collapse control), with a configurable symbol position.
+- **Per-button click actions**: assign the **left / right / middle** mouse clicks independently — expand the group, **run a shell command**, **open a member widget**, or do nothing (left defaults to expand). Once the group is expanded, its members take their own clicks and behave exactly as they do anywhere else on the bar.
+- **Pin icons to the collapsed view**: toggle any member to keep its live icon on the bar next to the button even while the group is folded.
+- **Unified click** (optional): treat the collapsed button + pinned icons as **one item** — a click anywhere on it fires the assigned mouse action, like a single Control-Center-style bar widget. The expand/collapse symbol is excluded, so the group can always be unfolded.
+- **Expand/collapse symbols**: an unfold symbol on the button plus a matching end-cap button at the far end (group icon + collapse control), with a configurable symbol position. Left-clicking a symbol always folds/unfolds, whatever the left-click action is set to. The button symbol can also stay hidden until you hover the group, giving its space back while hidden.
 - **Overlay mode** (optional): expand **without pushing** neighbouring widgets — members overflow and paint on top instead. Paints over reliably for a group in the centre section.
 - **One open at a time** (optional): expanding a group can auto-collapse any other open group.
 - **Readable when overlapping**: a solid backing behind the expanded group, with an optional border so it stays delineated even on opaque bars.
-- **Button display**: icon, label, or both; choose the button icon from a searchable Material icon picker.
+- **Button display**: icon, label, both, or nothing (just the expand/collapse symbol); choose the button icon from a searchable Material icon picker.
 - **Auto-collapse** (optional): collapse after a configurable delay (1–30s), with an option to only start the timer once the mouse leaves the expanded group.
 - **Multiple groups** via variants — each is a separate bar widget.
-- Add / drag-reorder / change / remove members; collapsible editor.
+- **Tabbed editor**: a selected group's settings are organized into Setup / Definition / Actions / Behavior / Members tabs — no more scrolling one long list.
+- **Member management like a real list**: add/edit members in a focused dialog, drag the handle to reorder, and hover between rows for a + that inserts a widget at that exact spot.
 
 ## Requirements
 
@@ -61,16 +64,17 @@ Then enable it in **DMS Settings → Plugins**, configure a group, and add it to
 
 1. Enable any third-party widget plugins you want to group (built-ins need no setup).
 2. Enable Widget Group in **Settings → Plugins** and open its settings.
-3. Create a group, then click it to edit (button icon/label/display, main widget + click action, expand/collapse symbol, overlay, one-open-at-a-time, auto-collapse).
-4. Add members; use the **star** to pick the main widget and the **×** to remove. Drag the handle to reorder.
+3. Create a group, then click it to edit. The editor is tabbed: **Definition** (button icon/label/display), **Actions** (per-button click actions, unified click), **Behavior** (expand/collapse symbol + position + hover-only, overlay, one-open-at-a-time, expanded border, auto-collapse), **Members**.
+4. On the **Members** tab, click **Add widget…** (or the **+** between rows) to add members via a dialog; click a row to change it, drag the **handle** to reorder, use the **pin** to keep a member's icon on the bar when collapsed, and the **×** to remove.
 5. **Bar Settings → Add Widget** to place the group on your bar.
 
-On the bar, click the button (▾/▴ or ‹/›) to show or hide the members.
+On the bar, each mouse button does whatever you assigned it (by default left click expands the group). The expand/collapse symbols always fold and unfold the group on left click, whatever the actions are set to, so the group is never stuck.
 
 ## Notes & caveats
 
 - Third-party members must be **widget** plugins (they have a bar pill + popout). Daemon/launcher/desktop plugins aren't applicable. DMS built-in bar widgets can also be added directly.
 - **Overlay mode** keeps the collapsed footprint and paints members on top of neighbours. Because bar sections paint in a fixed order (centre on top), the "paint over" is reliable for a group in the **centre** section; a left/right group only paints over its own section. Members fill any free space in their own section first, then spill over.
+- **Show symbol only on hover** gives the symbol's space back while it's hidden, so the group changes width as you hover it — in a centre section that re-centres everything around it. Leave it off if you'd rather nothing moved.
 - With **auto-collapse → only after mouse leaves**: if you open a member's popout and move onto that popout window, the group counts it as "mouse left" and collapses after the delay. The member's popout itself stays open.
 
 ## How it works
@@ -87,7 +91,11 @@ For each member it instantiates that plugin's widget component once — from `Pl
 - `GroupMember.qml` — one embedded member: instantiates the target widget and forwards bar context.
 - `GroupSettings.qml` — the editor (variants, members, display/direction/auto-collapse).
 - `DropdownIconPicker.qml` — searchable Material-symbol picker (shared with the Dropdown Menu plugin).
+- `assets/` — screenshots, plus a vendored Material Symbols codepoints index that backs the icon picker (see `assets/NOTICE.md`).
 
 ## License
 
 [MIT](LICENSE)
+
+`assets/material-symbols-rounded.codepoints` is a third-party file from Google's
+[material-design-icons](https://github.com/google/material-design-icons), used under Apache-2.0 — see [assets/NOTICE.md](assets/NOTICE.md).
